@@ -1,0 +1,71 @@
+version: '3'
+
+# 声明一个名为network的networks,subnet为network的子网地址,默认网关是172.19.0.1
+networks:
+  network:
+    ipam:
+      driver: default
+      config:
+        - subnet: '172.19.0.0/16'
+
+# 设置mysql，redis持久化保存
+volumes:
+  mysql:
+  redis:
+
+services:
+  server:
+    restart: always
+    build: # 构建自定义镜像
+      context: ./server     # 指定Dockerfile文件所在路径
+      dockerfile: ./Dockerfile  # 指定Dockerfile文件名称
+    image: douyin:1.0
+    container_name: DouYin-server
+    ports:
+      - "8080:8080"
+    depends_on:
+      - mysql
+      - redis
+    links:
+      - mysql
+      - redis
+    networks:
+      network:
+        ipv4_address: 172.19.0.12
+
+  mysql:            # 服务的名称
+    restart: always  # 代表只要Docker启动，那么这个容器就跟着一起启动
+    image: mysql:8.0.29   # 指定镜像路径
+    container_name: DouYin-MySQL   # 指定容器名称
+    command: mysqld --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci #设置utf8字符集
+    ports:
+      - "13306:3306"     # host物理直接映射端口为3306
+    environment:
+      MYSQL_DATABASE: sdy  # 初始化启动时要创建的数据库的名称
+      MYSQL_ROOT_PASSWORD: 123456  # 指定MySQL的ROOT用户登录密码
+    volumes:
+      - mysql:/var/lib/mysql
+      - ./server/douyin.sql:/docker-entrypoint-initdb.d/douyin.sql   # 映射数据卷
+    networks:
+      network:
+        ipv4_address: 172.19.0.13
+
+  redis:
+    restart: always
+    image: redis:6.2.7
+    container_name: DouYin-Redis
+    ports:
+      - "16379:6379"
+    volumes:
+      - redis:/data
+    networks:
+        network:
+          ipv4_address: 172.19.0.14
+
+  # 基于docker-compose.yml启动管理的容器:  docker-compose up -d
+  # 关闭并删除容器: docker-compose down
+  # 开启关闭重启已经存在的由docker-compose维护的容器:  docker-compose start|stop|restart
+  # 查看由docker-compose管理的容器: docker-compose ps
+  # 查看日志: docker-compose logs -f
+  # 数据卷,不支持直接挂载文件，只能挂载文件夹,想要挂载文件，必须宿主机也要有对应的同名文件
+  # 进入容器内部 docker exec -it 容器id bash

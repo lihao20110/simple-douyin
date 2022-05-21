@@ -1,0 +1,46 @@
+# before use, please modify file name: config.yaml
+system:
+  db-type: mysql
+  open-oss: false # 是否开始阿里云oss对象存储服务
+  static-ip: http://192.168.1.183:8080/static/    # 本地存放视频和图片的url服务器地址前缀
+jwt:
+  buffer-time: 86400
+  expires-time: 604800   # 以秒为单位
+  issuer: lihao
+  signing-key: 3b4a1d48-ccfe-4943-adc0-a2a5aa20f7de
+aliyun-oss:
+  endpoint:    # yourEndpoint
+  access-key-id:  # yourAccessKeyId
+  access-key-secret: # yourAccessKeySecret
+  bucket-name:   # yourBucketName
+  bucket-url: https://xxxxxxx.aliyuncs.com # yourBucketUrl
+  base-path: public/ # yourBasePath oss存放文件夹
+  allow-ext: .mp4 #允许上传的视频格式
+  max-size: 10   # 允许上传的视频最大容量，单位MB
+  part-size: 3  # 视频容量大于时，选择分片上传
+  part-num: 3   #分片数量
+mysql:
+  path: 127.0.0.1
+  port: 13306
+  config: charset=utf8mb4&parseTime=True&loc=Local
+  db-name: sdy
+  username: root
+  password: haohao
+  max-idle-conns: 10
+  max-open-conns: 100
+  log-mode: ""
+  log-zap: false
+redis:
+  db: 0
+  addr: 127.0.0.1:6379
+  password: ""
+zap:
+  level: info
+  prefix: '[github.com/lihao20110/simple-douyin/server]'
+  format: console
+  director: log
+  encode-level: LowercaseColorLevelEncoder
+  stacktrace-key: stacktrace
+  max-age: 0
+  show-line: true
+  log-in-console: true
