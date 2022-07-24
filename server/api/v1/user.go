@@ -3,6 +3,7 @@ package v1
 import (
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/lihao20110/simple-douyin/server/global"
@@ -10,14 +11,13 @@ import (
 	"github.com/lihao20110/simple-douyin/server/model/system"
 	sysReq "github.com/lihao20110/simple-douyin/server/model/system/request"
 	sysRes "github.com/lihao20110/simple-douyin/server/model/system/response"
-	"github.com/lihao20110/simple-douyin/server/service"
 	"github.com/lihao20110/simple-douyin/server/utils"
 	"go.uber.org/zap"
 )
 
 type UserApi struct{}
 
-//用户注册
+//Register 用户注册
 func (u *UserApi) Register(c *gin.Context) {
 	//1.获取参数
 	params := sysReq.UserRequest{}
@@ -48,10 +48,8 @@ func (u *UserApi) Register(c *gin.Context) {
 		})
 		return
 	}
-	//4.签发权限token
-	token, err := u.tokenNext(c, user)
-	//存储token到redis中
-	err = utils.SetToken(token, user.ID)
+	//4.jwt签发生成token
+	token, err := utils.CreateToken(user.ID, user.Name)
 	if err != nil {
 		c.JSON(http.StatusOK, sysRes.UserResponse{
 			Response: comRes.Response{
@@ -61,27 +59,18 @@ func (u *UserApi) Register(c *gin.Context) {
 		})
 		return
 	}
-
-	//5.创建成功后返回用户user 和 权限token
+	//5.创建成功后返回用户user 和 token
 	c.JSON(http.StatusOK, sysRes.UserResponse{
 		Response: comRes.Response{
 			StatusCode: 0,
 			StatusMsg:  "User register success!",
 		},
-		UserID: int64(user.ID),
+		UserID: user.ID,
 		Token:  token,
 	})
 }
 
-//签发jwt
-func (u *UserApi) tokenNext(c *gin.Context, user *system.User) (string, error) {
-	jwt := utils.NewJWT()
-	claims := jwt.CreateClaims(user.ID, user.UserName)
-	token, err := jwt.CreateToken(claims)
-	return token, err
-}
-
-//用户登录
+//Login 用户登录
 func (u *UserApi) Login(c *gin.Context) {
 	//1.获取参数
 	params := sysReq.UserRequest{}
@@ -112,49 +101,40 @@ func (u *UserApi) Login(c *gin.Context) {
 		})
 		return
 	}
-	token, _ := u.tokenNext(c, user)
-	global.DouYinLOG.Info(token, zap.String(token, token))
-	//存储token到redis中
-	err = utils.SetToken(token, user.ID)
+	//jwt生成对应的token
+	token, err := utils.CreateToken(user.ID, user.Name)
 	if err != nil {
-		global.DouYinLOG.Error(err.Error(), zap.Error(err))
-		c.JSON(http.StatusOK, sysRes.UserResponse{
-			Response: comRes.Response{
-				StatusCode: 401,
-				StatusMsg:  err.Error(),
-			},
+		c.JSON(http.StatusInternalServerError, comRes.Response{
+			StatusCode: 500,
+			StatusMsg:  err.Error(),
 		})
-		return
 	}
-
 	//登录成功，返回响应信息
 	c.JSON(http.StatusOK, sysRes.UserResponse{
 		Response: comRes.Response{
 			StatusCode: 0,
 			StatusMsg:  "User login success!",
 		},
-		UserID: int64(user.ID),
+		UserID: user.ID,
 		Token:  token,
 	})
 }
 
-//用户信息
+//UserInfo 用户信息
 func (u *UserApi) UserInfo(c *gin.Context) {
 	//1.获取参数
-	userIdStr := c.Query("user_id")
-	userId, err := strconv.ParseUint(userIdStr, 10, 64)
-	if err != nil {
+	userIDStr := c.Query("user_id")
+	userID, err := strconv.ParseUint(userIDStr, 10, 64)
+	if err != nil || userID == 0 {
 		c.JSON(http.StatusOK, comRes.Response{
 			StatusCode: 401,
-			StatusMsg:  "user id is invalid",
+			StatusMsg:  "user_id is invalid",
 		})
 		return
 	}
-	tokenUserId := c.GetUint64("user_id")
 	//2.service层处理
-	userInfo, err := userService.GetUserInfoById(userId)
-	//3.返回响应结果
-	if err != nil {
+	var userInfo system.User
+	if err := userService.GetUserInfoByUserIDRedis(userID, &userInfo); err != nil {
 		global.DouYinLOG.Error(err.Error(), zap.Error(err))
 		c.JSON(http.StatusOK, comRes.Response{
 			StatusCode: 401,
@@ -162,14 +142,43 @@ func (u *UserApi) UserInfo(c *gin.Context) {
 		})
 		return
 	}
-	isFollow, _ := service.ServiceGroupApp.RelationService.IsFollow(tokenUserId, userId)
+	//3.返回响应结果
+	var (
+		isLogined   = false //用户是否登录
+		loginUserID uint64
+		isFollow    = false
+	)
+	if token := c.Query("token"); token != "" { //判断传入的token是否存在，合法
+		claims, err := utils.ParseToken(token)
+		if err == nil && claims.ExpiresAt.UnixMilli()/1000-time.Now().UnixMilli()/1000 > 0 { //token合法,且在有效期内
+			isLogined = true
+			loginUserID = claims.UserID
+		} else {
+			global.DouYinLOG.Error(err.Error(), zap.Error(err))
+			c.JSON(http.StatusInternalServerError, comRes.Response{
+				StatusCode: 500,
+				StatusMsg:  err.Error(),
+			})
+			return
+		}
+	}
+	if isLogined { //用户处于登录状态
+		isFollow, err = relationService.GetFollowStatus(loginUserID, userID)
+		if err != nil {
+			global.DouYinLOG.Error(err.Error(), zap.Error(err))
+			c.JSON(http.StatusInternalServerError, comRes.Response{
+				StatusCode: 500,
+				StatusMsg:  err.Error(),
+			})
+		}
+	}
 	c.JSON(http.StatusOK, sysRes.UserInfoResponse{
 		Response: comRes.Response{
 			StatusCode: 0,
 		},
 		User: comRes.User{
 			ID:            userInfo.ID,
-			Name:          userInfo.UserName,
+			Name:          userInfo.Name,
 			FollowCount:   userInfo.FollowCount,
 			FollowerCount: userInfo.FollowerCount,
 			IsFollow:      isFollow,

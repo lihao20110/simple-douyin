@@ -3,7 +3,6 @@ package router
 import (
 	"github.com/gin-gonic/gin"
 	v1 "github.com/lihao20110/simple-douyin/server/api/v1"
-	"github.com/lihao20110/simple-douyin/server/middleware"
 )
 
 type UserRouter struct{}
@@ -15,6 +14,6 @@ func (u *UserRouter) InitUserRouter(Router *gin.RouterGroup) {
 		userRouter.POST("/register/", userApi.Register)
 		userRouter.POST("/login/", userApi.Login)
 
-		userRouter.Use(middleware.JWTAuth()).GET("/", userApi.UserInfo) //用户信息查看需要做鉴权
+		userRouter.GET("/", userApi.UserInfo)
 	}
 }

@@ -10,4 +10,5 @@ var (
 	ErrorUserNotExit   = errors.New("用户名不存在")
 	ErrorPasswordNull  = errors.New("密码不合法,要求以字母开头，长度在6~18之间，只能包含字符、数字和下划线")
 	ErrorPasswordError = errors.New("密码错误")
+	ErrorNotInCache    = errors.New("没有命中缓存")
 )

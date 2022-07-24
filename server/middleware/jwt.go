@@ -2,20 +2,18 @@ package middleware
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	comRes "github.com/lihao20110/simple-douyin/server/model/common/response"
 	"github.com/lihao20110/simple-douyin/server/utils"
 )
 
-// JwtAuth jwt中间件
+//JWTAuth  定义jwt中间件，进行用户身份认证
 func JWTAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		//从请求中获取token
 		token := c.Query("token")
-		if token == "" {
-			token = c.Request.PostFormValue("token")
-		}
 		if token == "" {
 			token = c.PostForm("token")
 		}
@@ -27,38 +25,25 @@ func JWTAuth() gin.HandlerFunc {
 			c.Abort() //阻止执行
 			return
 		}
-		userId := utils.GetUserId(token)
-		if userId == 0 { //从redis中查询，token是否失效
-			c.JSON(http.StatusOK, comRes.Response{
-				StatusCode: 403,
-				StatusMsg:  "token失效",
-			})
-			c.Abort() //阻止执行
-			return
-		}
-		j := utils.NewJWT()
 		// parseToken 解析token包含的信息
-		claims, err := j.ParseToken(token)
-		if err != nil || claims.UserId != userId {
+		claims, err := utils.ParseToken(token)
+		if err != nil {
 			c.JSON(http.StatusOK, comRes.Response{
-				StatusCode: 403,
+				StatusCode: 402,
 				StatusMsg:  "token 不正确",
 			})
 			c.Abort()
 			return
 		}
-		//token过期
-		//换票有待和前端约定使用
-		//if claims.ExpiresAt.Unix()-time.Now().Unix() < claims.BufferTime { //token换票区
-		//	claims.ExpiresAt = jwt.NewNumericDate(time.Now().Add(time.Second * time.Duration(global.DouYinCONFIG.JWT.ExpiresTime))) //token延期
-		//	newToken, _ := j.CreateTokenByOldToken(token, *claims)
-		//	newClaims, _ := j.ParseToken(newToken)
-		//	c.Header("new-token", newToken)
-		//	c.Header("new-expires-at", strconv.FormatInt(newClaims.ExpiresAt.Unix(), 10))
-		//}
-
-		c.Set("user_id", claims.UserId)
-
+		if claims.ExpiresAt.Unix()-time.Now().Unix() <= 0 { //token过期，是否延期换票有待和前端约定实现
+			c.JSON(http.StatusOK, comRes.Response{
+				StatusCode: 403,
+				StatusMsg:  "token 过期",
+			})
+			c.Abort()
+			return
+		}
+		c.Set("user_id", claims.UserID) // 后面请求解析可以通过Get()获取UserID
 		c.Next()
 	}
 }

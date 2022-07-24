@@ -3,7 +3,6 @@ package utils
 import (
 	"errors"
 	"fmt"
-	"mime/multipart"
 	"os"
 	"time"
 
@@ -34,7 +33,7 @@ func NewBucket() (*oss.Bucket, error) {
 	return bucket, nil
 }
 
-//分片上传
+//MultipartUpload 分片上传
 func MultipartUpload(objectName, localFileName string) (string, error) {
 	bucket, err := NewBucket()
 	if err != nil {
@@ -91,7 +90,7 @@ func MultipartUpload(objectName, localFileName string) (string, error) {
 	return global.DouYinCONFIG.AliyunOSS.BucketUrl + "/" + objectName, nil
 }
 
-// 上传文件
+//UploadFromFile 上传文件
 func UploadFromFile(objectName, localFileName string) (string, error) {
 	bucket, err := NewBucket()
 	if err != nil {
@@ -104,31 +103,4 @@ func UploadFromFile(objectName, localFileName string) (string, error) {
 		return "", errors.New("PutObjectFromFile Failed, err:" + err.Error())
 	}
 	return global.DouYinCONFIG.AliyunOSS.BucketUrl + "/" + objectName, nil
-}
-
-func UploadFile(file *multipart.FileHeader, userId uint) (string, error) {
-	bucket, err := NewBucket()
-	if err != nil {
-		global.DouYinLOG.Error("function AliyunOSS.NewBucket() Failed", zap.Any("err", err.Error()))
-		return "", errors.New("function AliyunOSS.NewBucket() Failed, err:" + err.Error())
-	}
-	// 读取视频文件。
-	f, openError := file.Open()
-	if openError != nil {
-		global.DouYinLOG.Error("function file.Open() Failed", zap.Any("err", openError.Error()))
-		return "", errors.New("function file.Open() Failed, err:" + openError.Error())
-	}
-	defer f.Close() // 创建文件 defer 关闭
-	// 上传阿里云路径 文件名格式 自己可以改 建议保证唯一性
-	newFileName := fmt.Sprintf("%d_%d_%s", time.Now().Unix(), userId, file.Filename)
-	yunFileTmpPath := global.DouYinCONFIG.AliyunOSS.BasePath + "/" + newFileName
-
-	// 上传文件流。
-	err = bucket.PutObject(yunFileTmpPath, f)
-	if err != nil {
-		global.DouYinLOG.Error("function formUploader.Put() Failed", zap.Any("err", err.Error()))
-		return "", errors.New("function formUploader.Put() Failed, err:" + err.Error())
-	}
-
-	return global.DouYinCONFIG.AliyunOSS.BucketUrl + "/" + yunFileTmpPath, nil
 }

@@ -10,7 +10,7 @@ require (
 	github.com/go-redis/redis/v8 v8.11.5
 	github.com/golang-jwt/jwt/v4 v4.4.1
 	github.com/lestrrat-go/file-rotatelogs v2.4.0+incompatible
-	github.com/songzhibin97/gkit v1.2.3
+	github.com/sony/sonyflake v1.0.0
 	github.com/spf13/viper v1.11.0
 	github.com/u2takey/ffmpeg-go v0.4.1
 	go.uber.org/zap v1.21.0

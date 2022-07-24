@@ -9,25 +9,16 @@ import (
 )
 
 type MyCustomClaims struct {
-	UserId     uint64 `json:"user_id"`
-	UserName   string `json:"username"`
+	UserID     uint64
+	UserName   string
 	BufferTime int64
 	jwt.RegisteredClaims
 }
 
-type JWT struct {
-	SigningKey []byte
-}
-
-func NewJWT() *JWT {
-	return &JWT{
-		SigningKey: []byte(global.DouYinCONFIG.JWT.SigningKey),
-	}
-}
-
-func (j *JWT) CreateClaims(userId uint64, userName string) MyCustomClaims {
+//CreateToken 创建一个token
+func CreateToken(userID uint64, userName string) (string, error) {
 	claims := MyCustomClaims{
-		UserId:     userId,
+		UserID:     userID,
 		UserName:   userName,
 		BufferTime: global.DouYinCONFIG.JWT.BufferTime,
 		// 缓冲时间1天 缓冲时间内会获得新的token刷新令牌 此时一个用户会存在两个有效令牌 但是前端只留一个 另一个会丢失
@@ -39,28 +30,16 @@ func (j *JWT) CreateClaims(userId uint64, userName string) MyCustomClaims {
 			Subject:   "userToken",
 		},
 	}
-	return claims
-}
-
-//创建一个token
-func (j *JWT) CreateToken(claims MyCustomClaims) (string, error) {
+	SigningKey := []byte(global.DouYinCONFIG.JWT.SigningKey)
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(j.SigningKey)
-	//return token.SigningString()
+	return token.SignedString(SigningKey)
 }
 
-// CreateTokenByOldToken 旧token 换新token 使用归并回源singleflight,合并处理相同请求，避免并发问题
-func (j *JWT) CreateTokenByOldToken(oldToken string, claims MyCustomClaims) (string, error) {
-	v, err, _ := global.DouYinConcurrencyControl.Do("JWT:"+oldToken, func() (interface{}, error) {
-		return j.CreateToken(claims)
-	})
-	return v.(string), err
-}
-
-// 解析 token
-func (j *JWT) ParseToken(tokenString string) (*MyCustomClaims, error) {
+//ParseToken 解析 token
+func ParseToken(tokenString string) (*MyCustomClaims, error) {
+	SigningKey := []byte(global.DouYinCONFIG.JWT.SigningKey)
 	token, _ := jwt.ParseWithClaims(tokenString, &MyCustomClaims{}, func(token *jwt.Token) (i interface{}, e error) {
-		return j.SigningKey, nil
+		return SigningKey, nil
 	})
 	if claims, ok := token.Claims.(*MyCustomClaims); ok { //&& token.Valid
 		return claims, nil

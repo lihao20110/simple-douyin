@@ -3,24 +3,29 @@ package v1
 import (
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/lihao20110/simple-douyin/server/global"
 	comRes "github.com/lihao20110/simple-douyin/server/model/common/response"
+	"github.com/lihao20110/simple-douyin/server/model/system"
 	sysRes "github.com/lihao20110/simple-douyin/server/model/system/response"
+	"github.com/lihao20110/simple-douyin/server/utils"
 	"go.uber.org/zap"
 )
 
 type RelationApi struct {
 }
 
+//RelationAction 用户关注接口
 func (r *RelationApi) RelationAction(c *gin.Context) {
 	//1.获取请求参数
 	toUserIDStr := c.Query("to_user_id")
-	if toUserIDStr == "" || toUserIDStr == "0" {
+	toUserID, err := strconv.ParseUint(toUserIDStr, 10, 64)
+	if err != nil {
 		c.JSON(http.StatusOK, comRes.Response{
 			StatusCode: 401,
-			StatusMsg:  "toUserIDStr is not exist",
+			StatusMsg:  "to_user_id is not legal",
 		})
 		return
 	}
@@ -32,40 +37,44 @@ func (r *RelationApi) RelationAction(c *gin.Context) {
 		})
 		return
 	}
-	userId, _ := c.Get("user_id")
-	toUserId, _ := strconv.ParseUint(toUserIDStr, 10, 64)
-	userIdUint := userId.(uint64)
+	userID := c.GetUint64("user_id")
 	//2.service层处理，返回响应
 	if actionTypeStr == "1" { //1-关注，2-取消关注
-		res, err := relationService.RelationAction(userIdUint, toUserId)
-		if err != nil {
+		if err := relationService.AddRelationAction(userID, toUserID); err != nil {
+			global.DouYinLOG.Error(err.Error(), zap.Error(err))
 			c.JSON(http.StatusOK, comRes.Response{
 				StatusCode: 500,
-				StatusMsg:  "relation action failed",
+				StatusMsg:  err.Error(),
 			})
 			return
 		}
-		c.JSON(http.StatusOK, res)
+		c.JSON(http.StatusOK, comRes.Response{
+			StatusCode: 0,
+			StatusMsg:  "add follow action success",
+		})
 		return
 	} else { //2-取消关注
-		res, err := relationService.CancelRelationAction(userIdUint, toUserId)
-		if err != nil {
+		if err := relationService.CancelRelationAction(userID, toUserID); err != nil {
+			global.DouYinLOG.Error(err.Error(), zap.Error(err))
 			c.JSON(http.StatusOK, comRes.Response{
 				StatusCode: 500,
-				StatusMsg:  "cancel relation action failed",
+				StatusMsg:  err.Error(),
 			})
 			return
 		}
-		c.JSON(http.StatusOK, res)
+		c.JSON(http.StatusOK, comRes.Response{
+			StatusCode: 0,
+			StatusMsg:  "cancel follow action success",
+		})
 		return
 	}
 }
 
-//关注者列表
+//FollowList 关注者列表接口
 func (r *RelationApi) FollowList(c *gin.Context) {
 	//1.获取请求参数
-	userIdStr := c.Query("user_id")
-	userId, err := strconv.ParseUint(userIdStr, 10, 64)
+	userIDStr := c.Query("user_id")
+	userID, err := strconv.ParseUint(userIDStr, 10, 64)
 	if err != nil {
 		c.JSON(http.StatusOK, comRes.Response{
 			StatusCode: 401,
@@ -73,9 +82,10 @@ func (r *RelationApi) FollowList(c *gin.Context) {
 		})
 		return
 	}
+
 	//2.service层处理
-	followUserList, err := relationService.FollowList(userId)
-	if err != nil {
+	var followUserList []system.User
+	if err := relationService.GetFollowUserListRedis(userID, &followUserList); err != nil {
 		global.DouYinLOG.Error(err.Error(), zap.Error(err))
 		c.JSON(http.StatusOK, comRes.Response{
 			StatusCode: 402,
@@ -84,7 +94,7 @@ func (r *RelationApi) FollowList(c *gin.Context) {
 		return
 	}
 	//3.返回响应
-	if len(*followUserList) == 0 { //关注用户为0
+	if len(followUserList) == 0 { //关注用户为0
 		global.DouYinLOG.Info("关注用户为0", zap.String("关注用户为0", "关注用户为0"))
 		c.JSON(http.StatusOK, sysRes.RelationListResponse{
 			Response: comRes.Response{
@@ -95,20 +105,70 @@ func (r *RelationApi) FollowList(c *gin.Context) {
 		})
 		return
 	}
+	var (
+		followResList []comRes.User
+		isLogined     = false
+		loginUserID   uint64
+		isFollowList  []bool
+		isFollow      = false
+	)
+	if token := c.Query("token"); token != "" { //判断传入的token是否存在，合法
+		claims, err := utils.ParseToken(token)
+		if err == nil && claims.ExpiresAt.UnixMilli()/1000-time.Now().UnixMilli()/1000 > 0 { //token合法,且在有效期内
+			isLogined = true
+			loginUserID = claims.UserID
+		} else {
+			global.DouYinLOG.Error(err.Error(), zap.Error(err))
+			c.JSON(http.StatusInternalServerError, comRes.Response{
+				StatusCode: 500,
+				StatusMsg:  err.Error(),
+			})
+			return
+		}
+	}
+	if isLogined { //用户处于登录状态
+		userIDList := make([]uint64, len(followUserList))
+		for i, user := range followUserList {
+			userIDList[i] = user.ID
+		}
+		isFollowList, err = relationService.GetFollowStatusList(loginUserID, userIDList)
+		if err != nil {
+			global.DouYinLOG.Error(err.Error(), zap.Error(err))
+			c.JSON(http.StatusOK, comRes.Response{
+				StatusCode: 500,
+				StatusMsg:  err.Error(),
+			})
+			return
+		}
+	}
+	//未登录状态，默认未关注
+	for i, followUser := range followUserList {
+		if isLogined {
+			isFollow = isFollowList[i]
+		}
+		resUser := comRes.User{
+			ID:            followUser.ID,
+			Name:          followUser.Name,
+			FollowCount:   followUser.FollowCount,
+			FollowerCount: followUser.FollowerCount,
+			IsFollow:      isFollow,
+		}
+		followResList = append(followResList, resUser)
+	}
 	c.JSON(http.StatusOK, sysRes.RelationListResponse{
 		Response: comRes.Response{
 			StatusCode: 0,
 			StatusMsg:  "get follow list success",
 		},
-		UserList: *followUserList,
+		UserList: followResList,
 	})
 }
 
-//粉丝列表
+//FollowerList 粉丝列表接口
 func (r *RelationApi) FollowerList(c *gin.Context) {
 	//1.获取请求参数
-	userIdStr := c.Query("user_id")
-	userId, err := strconv.ParseUint(userIdStr, 10, 64)
+	userIDStr := c.Query("user_id")
+	userID, err := strconv.ParseUint(userIDStr, 10, 64)
 	if err != nil {
 		c.JSON(http.StatusOK, comRes.Response{
 			StatusCode: 401,
@@ -118,8 +178,8 @@ func (r *RelationApi) FollowerList(c *gin.Context) {
 	}
 
 	//2.service层处理
-	followerUserList, err := relationService.FollowerList(userId)
-	if err != nil {
+	var followerUserList []system.User
+	if err := relationService.GetFollowerUserListRedis(userID, &followerUserList); err != nil {
 		global.DouYinLOG.Error(err.Error(), zap.Error(err))
 		c.JSON(http.StatusOK, comRes.Response{
 			StatusCode: 402,
@@ -128,22 +188,72 @@ func (r *RelationApi) FollowerList(c *gin.Context) {
 		return
 	}
 	//3.返回响应
-	if len(*followerUserList) == 0 { //粉丝用户为0
-		global.DouYinLOG.Info("粉丝用户为0", zap.String("粉丝用户为0", "粉丝用户为0"))
+	if len(followerUserList) == 0 { //用户粉丝为0
+		global.DouYinLOG.Info("用户粉丝为0", zap.String("用户粉丝为0", "用户粉丝为0"))
 		c.JSON(http.StatusOK, sysRes.RelationListResponse{
 			Response: comRes.Response{
 				StatusCode: 0,
-				StatusMsg:  "粉丝用户为0",
+				StatusMsg:  "用户粉丝为0",
 			},
 			UserList: []comRes.User{},
 		})
 		return
+	}
+	var (
+		followerResList []comRes.User
+		isLogined       = false
+		loginUserID     uint64
+		isFollowList    []bool
+		isFollow        = false
+	)
+	if token := c.Query("token"); token != "" { //判断传入的token是否存在，合法
+		claims, err := utils.ParseToken(token)
+		if err == nil && claims.ExpiresAt.UnixMilli()/1000-time.Now().UnixMilli()/1000 > 0 { //token合法,且在有效期内
+			isLogined = true
+			loginUserID = claims.UserID
+		} else {
+			global.DouYinLOG.Error(err.Error(), zap.Error(err))
+			c.JSON(http.StatusInternalServerError, comRes.Response{
+				StatusCode: 500,
+				StatusMsg:  err.Error(),
+			})
+			return
+		}
+	}
+	if isLogined { //用户处于登录状态
+		userIDList := make([]uint64, len(followerUserList))
+		for i, user := range followerUserList {
+			userIDList[i] = user.ID
+		}
+		isFollowList, err = relationService.GetFollowStatusList(loginUserID, userIDList)
+		if err != nil {
+			global.DouYinLOG.Error(err.Error(), zap.Error(err))
+			c.JSON(http.StatusOK, comRes.Response{
+				StatusCode: 500,
+				StatusMsg:  err.Error(),
+			})
+			return
+		}
+	}
+	//未登录状态，默认未关注
+	for i, followerUser := range followerUserList {
+		if isLogined {
+			isFollow = isFollowList[i]
+		}
+		resUser := comRes.User{
+			ID:            followerUser.ID,
+			Name:          followerUser.Name,
+			FollowCount:   followerUser.FollowCount,
+			FollowerCount: followerUser.FollowerCount,
+			IsFollow:      isFollow,
+		}
+		followerResList = append(followerResList, resUser)
 	}
 	c.JSON(http.StatusOK, sysRes.RelationListResponse{
 		Response: comRes.Response{
 			StatusCode: 0,
 			StatusMsg:  "get follower list success",
 		},
-		UserList: *followerUserList,
+		UserList: followerResList,
 	})
 }

@@ -10,7 +10,7 @@ import (
 
 func TestToken(t *testing.T) {
 	claims := MyCustomClaims{
-		UserId:     12,
+		UserID:     12,
 		UserName:   "hao",
 		BufferTime: 86400,
 		// 缓冲时间1天 缓冲时间内会获得新的token刷新令牌 此时一个用户会存在两个有效令牌 但是前端只留一个 另一个会丢失

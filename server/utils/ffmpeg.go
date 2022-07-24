@@ -14,7 +14,7 @@ import (
 //videoPath:视频的路径
 //saveCoverPath:生成的缩略图保存的路径
 //frameNum:缩略图所属的帧数,指定要截取视频的哪一帧作为封面,通过调整帧数截取稍微靠后的几秒作为封面
-//CoverImageName:缩略图的文件名称
+//CoverImageName 获取缩略图的文件名称
 func GetCoverImage(videoPath, saveCoverPath string, frameNum int) (CoverImageName string, err error) {
 	buf := bytes.NewBuffer(nil)
 	err = ffmpeg.Input(videoPath).Filter("select", ffmpeg.Args{fmt.Sprintf("gte(n,%d)", frameNum)}).Output("pipe:", ffmpeg.KwArgs{"vframes": 1, "format": "image2", "vcodec": "mjpeg"}).

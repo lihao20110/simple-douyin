@@ -8,12 +8,12 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-redis/redis/v8"
 	"github.com/lihao20110/simple-douyin/server/global"
 	comRes "github.com/lihao20110/simple-douyin/server/model/common/response"
 	"github.com/lihao20110/simple-douyin/server/model/system"
@@ -24,6 +24,7 @@ import (
 type PublishService struct {
 }
 
+//OssUpload 阿里云oss对象存储
 func (p *PublishService) OssUpload(data *multipart.FileHeader, video, image string) (string, string, error) {
 	//1.上传视频
 	objectVideo := global.DouYinCONFIG.AliyunOSS.BasePath + video
@@ -65,10 +66,12 @@ func (p *PublishService) OssUpload(data *multipart.FileHeader, video, image stri
 
 	return playUrl, coverUrl, nil
 }
+
+//LocalSave 视频保存服务器本地
 func (p *PublishService) LocalSave(c *gin.Context, data *multipart.FileHeader, userId uint64) (string, string, error) {
 	//1.保存视频
 	//视频上传后会保存到本地 public 目录中，访问时用 127.0.0.1:8080/static/video_name.mp4 即可
-	newFileName := fmt.Sprintf("%d_%d_%s", time.Now().Unix(), userId, data.Filename)
+	newFileName := fmt.Sprintf("%d_%d_%s", time.Now().UnixMilli()/1000, userId, data.Filename)
 	videoLocalSavePath := filepath.Join("./public/", newFileName)        //工程目录server/public下
 	if err := c.SaveUploadedFile(data, videoLocalSavePath); err != nil { //保存在本地
 		global.DouYinLOG.Error(err.Error(), zap.Error(err))
@@ -91,6 +94,7 @@ func (p *PublishService) LocalSave(c *gin.Context, data *multipart.FileHeader, u
 	return playLocalUrl, coverLocalUrl, nil
 }
 
+//CheckVideo 参数合法性校验
 func (p *PublishService) CheckVideo(data *multipart.FileHeader, title string) (*comRes.Response, error) {
 	//检查title
 	if len(title) > global.MaxTitleLength || len(title) < global.MinTitleLength {
@@ -116,62 +120,70 @@ func (p *PublishService) CheckVideo(data *multipart.FileHeader, title string) (*
 	}
 	return nil, nil
 }
+
+//CreateVideo 将用户发布的视频写入数据库
 func (p *PublishService) CreateVideo(video *system.Video) error {
-	// 开始事务
-	tx := global.DouYinDB.Begin()
-	// 在事务中执行一些 db 操作（从这里开始，您应该使用 'tx' 而不是 'db'）
-	if err := tx.Create(video).Error; err != nil {
+	//写入数据库
+	video.CreatedAt = time.Now()
+	if err := global.DouYinDB.Create(video).Error; err != nil {
 		global.DouYinLOG.Error(err.Error(), zap.Error(err))
-		tx.Rollback() // 遇到错误时回滚事务
 		return err
 	}
-	//发布，更新发布视频数 +1   接口文档未要求返回视频发布数数据，暂待
-	//提交事务
-	tx.Commit()
-	return nil
+	//发布成功后，回写缓存
+	keyPublish := fmt.Sprintf(utils.PublishPattern, video.AuthorID)
+	keyVideo := fmt.Sprintf(utils.VideoPattern, video.ID)
+	keyEmpty := fmt.Sprintf(utils.PublishEmptyPattern, video.AuthorID)
+	listZ := &redis.Z{
+		Score:  float64(time.Now().UnixMilli() / 1000),
+		Member: video.ID,
+	}
+	_, err := global.DouYinRedis.TxPipelined(global.DouYinCONTEXT, func(pipe redis.Pipeliner) error {
+		//删除发布视频为空值的处理
+		pipe.Del(global.DouYinCONTEXT, keyEmpty)
+		//添加视频到feed缓存
+		pipe.ZAdd(global.DouYinCONTEXT, utils.FeedPattern, &redis.Z{
+			Score:  float64(video.CreatedAt.UnixMilli() / 1000),
+			Member: video.ID,
+		})
+		//添加用户发布视频列表ID缓存,如果存在
+		result, err := pipe.Expire(global.DouYinCONTEXT, keyPublish, utils.PublishExpire+utils.GetRandExpireTime()).Result()
+		if err == nil && result {
+			pipe.ZAdd(global.DouYinCONTEXT, keyPublish, listZ)
+		}
+		//设置视频详细信息缓存
+		pipe.HMSet(global.DouYinCONTEXT, keyVideo, "id", video.ID, "created_at", video.CreatedAt.UnixMilli(), "author_id", video.AuthorID, "title", video.Title, "play_url", video.PlayUrl, "cover_url", video.CoverUrl,
+			"favorite_count", video.FavoriteCount, "comment_count", video.CommentCount)
+		pipe.Expire(global.DouYinCONTEXT, keyVideo, utils.VideoExpire+utils.GetRandExpireTime())
+		return nil
+	})
+	return err
 }
 
-func (p *PublishService) GetVideoList(userId uint64) (*[]comRes.Video, error) {
-	var videoList *[]system.Video
-	err := global.DouYinDB.Where("author_id = ?", userId).Order("created_at DESC").Find(&videoList).Error
-	if err != nil {
-		return nil, err
+//GetVideoListByUserIDSql 缓存不存在时，获取用户的发布视频列表
+func (p *PublishService) GetVideoListByUserIDSql(userID uint64, videoList *[]system.Video) error {
+	var getVideoList []system.Video
+	if err := global.DouYinDB.Where("author_id = ?", userID).Find(&getVideoList).Error; err != nil {
+		return err
 	}
-	user, err := ServiceGroupApp.UserService.GetUserInfoById(userId)
-	if err != nil {
-		return nil, err
+	*videoList = make([]system.Video, 0, len(getVideoList))
+	//对查询结果建立map映射关系
+	mapVideoIDToVideo := make(map[uint64]system.Video, len(getVideoList))
+	for i, video := range getVideoList {
+		var status = true
+		//查询favorite_count
+		if err := global.DouYinDB.Model(&system.Favorite{}).Where("video_id = ? and is_favorite = ?", video.ID, &status).Count(&getVideoList[i].FavoriteCount).Error; err != nil {
+			return err
+		}
+		//查询comment_count
+		if err := global.DouYinDB.Model(&system.Comment{}).Where("video_id = ? ", video.ID).Count(&getVideoList[i].CommentCount).Error; err != nil {
+			return err
+		}
+		mapVideoIDToVideo[video.ID] = getVideoList[i]
 	}
-	wg := sync.WaitGroup{}
-	res := make([]comRes.Video, 0, len(*videoList))
-	for i := 0; i < len(*videoList); i++ {
-		wg.Add(1)
-		go func(videoSys system.Video) {
-			defer wg.Done()
-			isFavorite, _ := ServiceGroupApp.FavoriteService.IsFavorite(userId, videoSys.ID)
-			isFollow, _ := ServiceGroupApp.RelationService.IsFollow(userId, user.ID)
-			video := &comRes.Video{
-				ID:    videoSys.ID,
-				Title: videoSys.Title,
-				Author: comRes.User{
-					ID:            user.ID,
-					Name:          user.UserName,
-					FollowCount:   user.FollowCount,
-					FollowerCount: user.FollowerCount,
-					IsFollow:      isFollow,
-				},
-				PlayURL:       videoSys.PlayUrl,
-				CoverURL:      videoSys.CoverUrl,
-				CommentCount:  videoSys.CommentCount,
-				FavoriteCount: videoSys.FavoriteCount,
-				IsFavorite:    isFavorite,
-				CreateDate:    videoSys.CreatedAt,
-			}
-			res = append(res, *video)
-		}((*videoList)[i])
+	for _, video := range getVideoList {
+		if v, ok := mapVideoIDToVideo[video.ID]; ok {
+			*videoList = append(*videoList, v)
+		}
 	}
-	wg.Wait()
-	sort.Slice(res, func(i, j int) bool {
-		return res[i].CreateDate.After(res[j].CreateDate)
-	})
-	return &res, err
+	return nil
 }
